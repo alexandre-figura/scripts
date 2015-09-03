@@ -12,11 +12,10 @@ call plug#end()
 
 " CtrlP
 " =====
-" Maximum number of files to scan.
-let g:ctrlp_max_files = 100000
-" Command to use to find files in directories versionned with Git.
-let g:ctrlp_user_command = ['.git', 'cd %s && git ls-files']
-
+" Set local working directory to one of the ancestors of the current file.
+let g:ctrlp_working_path_mode = 'ra'
+" Set the maximum number of results to display.
+let g:ctrlp_match_window = 'max:50'
 
 " ######################
 " # Keyboard shortcuts #
@@ -75,7 +74,15 @@ set tabstop=4
 
 " Python
 " ======
-" Set the max line length.
-autocmd FileType python :set textwidth=120
 " Check code syntax before saving file.
 autocmd BufWritePost *.py call Flake8()
+
+
+" ########################
+" # Custom configuration #
+" ########################
+
+" Import custom configuration if exists.
+if filereadable(glob("~/.nvimrc_custom"))
+    source ~/.nvimrc_custom
+endif
