@@ -17,6 +17,14 @@ let g:ctrlp_working_path_mode = 'ra'
 " Set the maximum number of results to display.
 let g:ctrlp_match_window = 'max:50'
 
+" Flake8
+" ======
+" Display errors in gutter.
+let g:flake8_show_in_gutter=1
+" Do not open a new buffer to display errors.
+let g:flake8_show_quickfix=0
+
+
 " ######################
 " # Keyboard shortcuts #
 " ######################
