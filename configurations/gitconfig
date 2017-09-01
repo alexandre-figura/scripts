@@ -1,0 +1,21 @@
+[user]
+    email = <me>@<something>
+    name = Alexandre Figura
+[alias]
+    a = add .
+    b = branch
+    c = commit -m
+    ca = commit --amend
+    ck = checkout
+    ckb = checkout -b
+    d = diff
+    ds = diff --staged
+    l = log
+    ll = log --oneline --abbrev-commit --all --graph --decorate --color
+    m = merge --ff-only
+    pl = pull --rebase
+    ps = push
+    r = rebase
+    ri = rebase -i
+    s = status
+    sh = show
