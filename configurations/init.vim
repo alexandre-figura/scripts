@@ -56,7 +56,7 @@ let g:flake8_show_quickfix=1
 " Use Solarized theme.
 colorscheme solarized
 " Default background.
-set background=light
+set background= dark
 " Change theme's color.
 call togglebg#map("<F2>")
 
