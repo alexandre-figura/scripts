@@ -48,7 +48,7 @@ map <C-b> :CtrlPBuffer<CR>
 let g:flake8_show_in_gutter=1
 " Display error locations in file.
 let g:flake8_show_in_file=1
-" Do not open a new buffer to display errors.
+" Open a new buffer to display errors.
 let g:flake8_show_quickfix=1
 
 " VIM Colors Solarized
@@ -110,7 +110,7 @@ set hlsearch
 " ======
 " Check code syntax before saving file.
 autocmd BufWritePost *.py call Flake8()
-" Inserting a breakpoint.
+" Shortcut for inserting a breakpoint.
 au FileType python map <silent> <leader>s oimport pdb<CR>pdb.set_trace()<esc>
 
 
