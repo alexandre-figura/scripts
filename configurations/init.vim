@@ -9,7 +9,7 @@ Plug 'Shougo/deoplete.nvim', { 'do': ':UpdateRemotePlugins' }
 Plug 'scrooloose/nerdtree'
 Plug 'bling/vim-airline'
 Plug 'altercation/vim-colors-solarized'
-Plug 'nvie/vim-flake8'
+Plug 'arugifa/vim-flake8'
 Plug 'airblade/vim-gitgutter'
 Plug 'sickill/vim-monokai'
 call plug#end()
