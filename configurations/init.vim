@@ -12,6 +12,7 @@ Plug 'altercation/vim-colors-solarized'
 Plug 'arugifa/vim-flake8'
 Plug 'airblade/vim-gitgutter'
 Plug 'sickill/vim-monokai'
+Plug 'hashivim/vim-terraform'
 call plug#end()
 
 " Deoplete
