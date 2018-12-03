@@ -6,6 +6,10 @@
 " ======
 " Set the max line length according to PEP8.
 autocmd FileType python :set textwidth=79
+" Check code syntax before saving file.
+autocmd BufWritePost *.py call Flake8()
+" Shortcut for inserting a breakpoint.
+au FileType python map <silent> <leader>s oimport pdb<CR>pdb.set_trace()<esc>
 
 " YAML
 " ====

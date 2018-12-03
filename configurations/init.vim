@@ -102,18 +102,6 @@ set incsearch
 set hlsearch
 
 
-" ####################################
-" # Languages Specific Configuration #
-" ####################################
-
-" Python
-" ======
-" Check code syntax before saving file.
-autocmd BufWritePost *.py call Flake8()
-" Shortcut for inserting a breakpoint.
-au FileType python map <silent> <leader>s oimport pdb<CR>pdb.set_trace()<esc>
-
-
 " ########################
 " # Custom Configuration #
 " ########################
