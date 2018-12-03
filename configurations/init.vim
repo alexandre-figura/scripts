@@ -49,8 +49,6 @@ map <C-b> :CtrlPBuffer<CR>
 let g:flake8_show_in_gutter=1
 " Display error locations in file.
 let g:flake8_show_in_file=1
-" Open a new buffer to display errors.
-let g:flake8_show_quickfix=1
 
 " VIM Colors Solarized
 " ====================
@@ -81,7 +79,8 @@ set number
 set list
 " Characters used to display tabs and spaces.
 set listchars=tab:>.,trail:.
-" Highlight column after maximum text width.
+" Limit text width and highlight the border.
+set textwidth=119
 set cc=+1
 
 " Editing
