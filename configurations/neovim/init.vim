@@ -79,8 +79,7 @@ set number
 set list
 " Characters used to display tabs and spaces.
 set listchars=tab:>.,trail:.
-" Limit text width and highlight the border.
-set textwidth=119
+" Highlight the maximum line length column.
 set colorcolumn=+1
 
 " Editing
