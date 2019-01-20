@@ -45,10 +45,12 @@ map <C-b> :CtrlPBuffer<CR>
 
 " Flake8
 " ======
-" Display errors in gutter.
+" Display error markers in gutter.
 let g:flake8_show_in_gutter=1
 " Display error locations in file.
 let g:flake8_show_in_file=1
+" Do not show error descriptions in a new window.
+let g:flake8_show_quickfix=0
 
 " VIM Colors Solarized
 " ====================
