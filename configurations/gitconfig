@@ -17,7 +17,9 @@
     pl = pull --rebase
     ps = push
     r = rebase
+    rc = rebase --continue
     rmb = !git checkout master && git branch -D $1 && git push origin -d $1 && :
+    rmt = !git tag --delete $1 && git push --delete origin $1 && :
     ri = rebase -i
     s = status
     sh = show
