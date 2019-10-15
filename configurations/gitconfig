@@ -4,7 +4,7 @@
 [alias]
     a = add .
     b = branch
-    c = commit -m
+    c = commit -e -m
     ca = commit --amend
     ck = checkout
     ckb = !git checkout -b $1 && git push -u origin $1 && :
@@ -15,7 +15,7 @@
     ll = log --oneline --abbrev-commit --all --graph --decorate --color
     m = merge --ff-only
     pl = pull --rebase
-    ps = push
+    ps = push --follow-tags
     r = rebase
     rc = rebase --continue
     rmb = !git checkout master && git branch -D $1 && git push origin -d $1 && :
