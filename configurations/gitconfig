@@ -23,3 +23,4 @@
     ri = rebase -i
     s = status
     sh = show
+    t = tag -a
