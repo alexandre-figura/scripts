@@ -4,8 +4,9 @@
 [alias]
     a = add .
     b = branch
-    c = commit -e -m
+    c = commit -m
     ca = commit --amend
+    ce = commit -e -m
     ck = checkout
     ckb = !git checkout -b $1 && git push -u origin $1 && :
     d = diff
