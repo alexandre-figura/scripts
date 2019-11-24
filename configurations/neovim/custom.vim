@@ -7,6 +7,10 @@
 " Set the max line length to be able to use two windows on laptop screens.
 autocmd FileType markdown :set textwidth=79
 
+" Asciidoctor
+" ===========
+autocmd FileType asciidoc :set textwidth=79
+
 " Python
 " ======
 " Set the line length according to PEP8.
