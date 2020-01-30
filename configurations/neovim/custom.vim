@@ -2,6 +2,13 @@
 " # Languages Specific Configuration #
 " ####################################
 
+" Golang
+" ======
+" Use tabs instead of spaces for indentation.
+autocmd FileType go :set noexpandtab
+" Don't display tab indentation.
+set nolist
+
 " Markdown
 " ========
 " Set the max line length to be able to use two windows on laptop screens.
