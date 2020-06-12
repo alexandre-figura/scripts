@@ -15,6 +15,7 @@
     l = log
     ll = log --oneline --abbrev-commit --all --graph --decorate --color
     m = merge --ff-only
+    mpl = !git checkout master && git pull --rebase && :
     pl = pull --rebase
     ps = push --follow-tags
     r = rebase
@@ -24,4 +25,4 @@
     ri = rebase -i
     s = status
     sh = show
-    t = tag -a
+    t = !git tag -a $1 && git push --follow-tags && :
