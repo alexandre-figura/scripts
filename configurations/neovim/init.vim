@@ -10,7 +10,8 @@ Plug 'scrooloose/nerdtree'
 Plug 'bling/vim-airline'
 Plug 'altercation/vim-colors-solarized'
 Plug 'arugifa/vim-flake8'
-Plug 'airblade/vim-gitgutter'
+" Plug 'airblade/vim-gitgutter'
+Plug 'jparise/vim-graphql'
 Plug 'sickill/vim-monokai'
 Plug 'hashivim/vim-terraform'
 call plug#end()
@@ -19,6 +20,8 @@ call plug#end()
 " ========
 " Activate plugin.
 let g:deoplete#enable_at_startup = 1
+" Use locally installed version of Python Neovim.
+let g:python3_host_prog = '/usr/bin/python3'
 " Close preview window of function definition after auto-completion is done.
 autocmd CompleteDone * silent! pclose!
 
@@ -33,6 +36,8 @@ call camelcasemotion#CreateMotionMappings('<leader>')
 map <C-n> :NERDTreeToggle<CR>
 " Find the currently opened file in the tree panel.
 map <C-f> :NERDTreeFind<CR>
+" Show dot files.
+let NERDTreeShowHidden=1
 
 " CtrlP
 " =====

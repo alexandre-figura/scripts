@@ -2,6 +2,10 @@
 " # Languages Specific Configuration #
 " ####################################
 
+" Asciidoctor
+" ===========
+autocmd FileType asciidoc :set textwidth=79
+
 " Golang
 " ======
 " Use tabs instead of spaces for indentation.
@@ -14,16 +18,12 @@ set nolist
 " Set the max line length to be able to use two windows on laptop screens.
 autocmd FileType markdown :set textwidth=79
 
-" Asciidoctor
-" ===========
-autocmd FileType asciidoc :set textwidth=79
-
 " Python
 " ======
-" Set the line length according to PEP8.
+" Set the line length according to BlackFormatter.
 " No new line is created automatically when reaching the maximum length,
 " as this is rather annoying.
-autocmd FileType python :set colorcolumn=80
+autocmd FileType python :set colorcolumn=89
 " Check code syntax before saving file.
 autocmd BufWritePost *.py call Flake8()
 " Shortcut for inserting a breakpoint.
