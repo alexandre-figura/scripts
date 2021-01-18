@@ -15,12 +15,12 @@
     l = log
     ll = log --oneline --abbrev-commit --all --graph --decorate --color
     m = merge --ff-only
-    mpl = !git checkout master && git pull --rebase && :
+    mpl = !git checkout main && git pull --rebase && :
     pl = pull --rebase
     ps = push --follow-tags
     r = rebase
     rc = rebase --continue
-    rmb = !git checkout master && git branch -D $1 && git push origin -d $1 && :
+    rmb = !git checkout main && git branch -D $1 && git push origin -d $1 && :
     rmt = !git tag --delete $1 && git push --delete origin $1 && :
     ri = rebase -i
     s = status
