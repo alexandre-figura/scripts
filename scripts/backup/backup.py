@@ -3,17 +3,16 @@
 import hashlib
 import logging
 import sys
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from subprocess import run
+from typing import Any, List, Optional
 
+import openstack
 import yaml
 from cached_property import cached_property
-from openstack import connect
 from openstack.exceptions import ResourceNotFound
 from openstack.object_store.v1._proxy import Proxy as ObjectStore
-from subprocess import run
 from yaml import YAMLError
 
 log = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ def retrieve_backup(data_container: str, metadata_container: str) -> 'Backup':
     If files are corrupted, exits abruptly.
     """
     # Retrieve backup metadata from the Cloud.
-    cloud = connect()
+    cloud = openstack.connect()
     object_store = cloud.object_store
     backup = Backup(object_store, data_container, metadata_container)
 
@@ -58,25 +57,29 @@ def synchronize(directory: Path, backup: 'Backup'):
                 # File already exists in the backup.
 
                 if copy.last_modification != media.last_modification:
-                    # File has changed and needs to be uploaded again.
+                    # File has changed since last backup.
                     backup.upload_new_version(media)
 
             elif copies := backup.find_by_checksum(media):
-                # Files with  similar checksum already exist in the backup.
-                # As OpenStack uses MD5 to compute checksums,
-                # there can be collisions.
+                # A similar file already exists in the backup.
 
-                if len(copies) == 1:
-                    # File is already in backup, but has been renamed.
-                    backup.rename(copies[0], media)
-                else:
-                    for copy in copies:
-                        # FIXME: Do something!!
-                        pass
+                for copy in copies:
+                    if copy.last_modification == media.last_modification:
+                        # A copy has been made, or the file has been renamed.
+
+                        if (directory / copy.original_file).exists():
+                            # It is a brand new copy.
+                            backup.upload(media)
+                        else:
+                            # File has been renamed.
+                            backup.rename(copy, media)
 
             else:
                 # File is not in backup yet.
                 backup.upload(media)
+
+    # Archive files not on disk anymore.
+    backup.clean()
 
            
 with open('medias.yaml', 'w') as f:
@@ -93,19 +96,11 @@ class Backup:
     # obfuscated_name -> checksum, file, mtime
     MAPPING_FILENAME = 'files.yaml'
 
-    @dataclass
-    class BackupItem:
-        checksum: str
-        last_modification: float
-        obfuscated_name: str
-        original_file: str
+    #: External function to obfuscate file paths in the backup.
+    obfuscator: Any = hashlib.blake2b
 
-        def to_dict(self):
-            return {
-                'checksum': self.checksum,
-                'mtime': self.last_modification,
-                'file': self.original_file,
-            }
+    #: External function to encrypt files in the backup.
+    encryptor: Any = None
 
     def __init__(
             self,
@@ -126,15 +121,16 @@ class Backup:
                 self.CHECKSUMS_FILENAME,
                 container=self.metadata_container,
             )
-            return yaml.load(checksums)  # Can raise YAMLError
 
         except ResourceNotFound:
+            checksums = b'{}'
             self.object_store.upload_object(
                 self.CHECKSUMS_FILENAME,
                 container=self.metadata_container,
-                data=b'',
+                data=checksums,
             )
-            return {}
+
+        return yaml.safe_load(checksums)  # Can raise YAMLError
 
     @cached_property
     def files(self):
@@ -143,17 +139,18 @@ class Backup:
                 self.MAPPING_FILENAME,
                 container=self.metadata_container,
             )
-            return yaml.load(files)  # Can raise YAMLError
 
         except ResourceNotFound:
+            files = b'{}'
             self.object_store.upload_object(
                 self.MAPPING_FILENAME,
                 container=self.metadata_container,
-                data=b'',
+                data=files,
             )
-            return {}
 
-    # Methods
+        return yaml.safe_load(files)  # Can raise YAMLError
+
+    # Managers
 
     def load(self) -> None:
         """Retrieve backup's metadata.
@@ -163,22 +160,28 @@ class Backup:
         self.checksums  # Can raise YAMLError
         self.files      # Can raise YAMLError
 
-    def find_by_checksum(self, media: 'Media') -> List[BackupItem]:
+    def clean(self) -> None:
+        """Archive in backup files deleted from :attr:`.directory`."""
+        # TODO: Don't analyze files already found previously (01/2021)
+        for name in self.files:
+            item = BackupItem(name, backup=self)
+
+            if not (self.directory / item.original_file).exists():
+                self.delete(item)
+
+    # Finders
+
+    def find_by_checksum(self, media: 'Media') -> List['BackupItem']:
         """Look for files in backup with a similar checksum than `media`."""
         items = []
 
         for obfuscated_name in self.checksums.get(media.checksum, []):
-            item = self.BackupItem(
-                checksum=media.checksum,
-                last_modification=self.files[obfuscated_name]['mtime'],
-                obfuscated_name=obfuscated_name,
-                original_file=self.files[obfuscated_name]['file'],
-            )
+            item = BackupItem(obfuscated_name, backup=self)
             items.append(item)
 
         return items
 
-    def find_by_path(self, media: 'Media') -> Optional[BackupItem]:
+    def find_by_path(self, media: 'Media') -> Optional['BackupItem']:
         """Look for a file in backup with a similar path than `media`."""
         obfuscated_name = self.obfuscate_filepath(media)
 
@@ -187,57 +190,52 @@ class Backup:
         except AssertionError:
             return
 
-        return self.BackupItem(
-            checksum=self.checksums[obfuscated_name],
-            last_modification=self.files[obfuscated_name]['mtime'],
-            obfuscated_name=obfuscated_name,
-            original_file=self.files[obfuscated_name]['file'],
-        )
+        return BackupItem(obfuscated_name, backup=self)
 
-    def obfuscate_filepath(self, media):
-        return hashlib.blake2b(media.relative_path.encode()).hexdigest()
+    # Actions
 
-    def rename(self, item: BackupItem, media: 'Media') -> None:
+    def rename(self, item: 'BackupItem', media: 'Media') -> 'BackupItem':
         """Rename file in the backup."""
-        error = f"File not in backup: {item.obfuscated_name}"
-        assert item.obfuscated_name in self.mapping, error
+        assert item.exists(), f"File not in backup: {item.name}"
 
         obfuscated_name = self.obfuscate_filepath(media)
+        new = self.copy(item, obfuscated_name)
+        self.delete(item)
 
-        run(
-            f'swift copy '  # Not yet supported by OpenStack SDK
-            f'-d /{self.data_container}/{obfuscated_name} '
-            f'{self.data_container} {item.obfuscated_name}',
-            check=True,  # TODO: Handle errors (01/2021)
-        )
-        self.object_store.delete(item.obfuscated_name, self.data_container)
+        log.info("Renamed in backup: %s", media)
 
-        # Update metadata.
-        self.checksums[item.checksum].append(obfuscated_name)
-        self.checksums[item.checksum].remove(item.obfuscated_name)
+        return new
 
-        self.files[target] = self.files[item.obfuscated_name]
-        self.files[target]['file'] = media.relative_path
-        del self.files[item.obfuscated_name]
+    def upload(self, media: 'Media', replace: bool = False) -> 'BackupItem':
+        """Upload new file to the backup.
 
-    def upload(self, media: 'Media') -> BackupItem:
-        """Upload new file to the backup."""
+        :param replace:
+            overwrite file if already in backup.
+        :raise <SOMETHING>:
+            if file already exists in backup and `replace` is `False`.
+        """
         # TODO: Properly compute checksum of files > 5GB.
         error = "Cannot backup files bigger than 5gb for now"
         assert media.stat().st_size < 5368709120, error
 
         obfuscated_name = self.obfuscated_name(media)
+        item = BackupItem(obfuscated_name, backup=self)
 
+        if replace:
+            assert item.exists(), f"File not in backup: {item.name}"
+            self.delete(item)
+
+        # TODO: Check if it overwrites by default (01/2021)
         while self.object_store.upload_object(
-            self.data_container, media.remote_name, filename=str(media),
+            self.data_container, obfuscated_name, filename=str(media),
         ):
             upload = self.object_store.get_object_metadata(
-                media.remote_name,
+                obfuscated_name,
                 self.data_container,
             )
 
             if upload.etag == media.checksum:
-                break
+                break  # Alles gut!
             else:
                 log.warning(
                     f"Upload not completed successfully. "
@@ -246,60 +244,109 @@ class Backup:
                 )
 
         # Update metadata.
-        item = self.BackupItem(
-            checksum=media.checksum,
-            last_modification=self.files[obfuscated_name]['mtime'],
-            obfuscated_name=obfuscated_name,
-            original_file=self.files[obfuscated_name]['file'],
-        )
-        self.files[obfuscated_name] = item.to_dict()
-
         if media.checksum in self.checksums:
             self.checksums[media.checksum].append(obfuscated_name)
         else:
             self.checksums[media.checksum] = [obfuscated_name]
 
-        log.debug("Uploaded to backup: %s", media)
+        self.files[obfuscated_name] = {
+            'checksum': media.checksum,
+            'file': media.relative_path,
+            'mtime': media.last_modification,
+        }
+
+        if replace:
+            log.info("Uploaded new version for: %s", media)
+        else:
+            log.info("Uploaded to backup: %s", media)
 
         return item
 
-    def upload_new_version(self, media: 'Media') -> BackupItem:
+    def upload_new_version(self, media: 'Media') -> 'BackupItem':
         """Update a file in the backup.
 
         A copy of the previous version is kept for 6 months.
         """
+        obfuscated_name = self.obfuscated_name(media)
+        item = BackupItem(obfuscated_name, backup=self)
+        assert item.exists(), f"File not in backup: {item.name}"
+
         # TODO: Properly compute checksum of files > 5GB (01/2021)
         error = "Cannot backup files bigger than 5gb for now: {media}"
         assert media.stat().st_size < 5368709120, error
 
-        obfuscated_name = self.obfuscated_name(media)
+        return self.upload(media, replace=True)
 
-        try:
-            item = self.mapping[obfuscated_name]
-        except KeyError:
-            raise AssertionError(f"File not yet in backup: {media}")
+    # Helpers
 
-        # Archive previous version.
+    def copy(self, item: 'BackupItem', target: str) -> 'BackupItem':
+        assert item.exists(), f"File not in backup: {item.name}"
+
+        run(
+            f'swift copy '  # Not yet supported by OpenStack SDK
+            f'-d /{self.data_container}/{target} '
+            f'{self.data_container} {item.name}',
+            check=True,  # TODO: Handle errors and check ETAG (01/2021)
+        )
+        self.files[target] = self.files[item.name]
+        self.checksums[item.checksum].append(target)
+
+        return BackupItem(target, backup=self)
+
+    def delete(self, item: 'BackupItem') -> None:
+        """Delete file from the backup.
+
+        File is not immediately deleted: an archive is made,
+        and kept for 6 months, before getting automatically
+        removed from the backup.
+        """
+        assert item.exists(), f"File not in backup: {item.name}"
+
         stamp = int(datetime.utcnow().timestamp())
-        archive_name = f'{media.remote_name}-{stamp}'
+        archive_name = f'{item.name}-{stamp}'
 
         run(
             f'swift copy '  # Not yet supported by OpenStack SDK
             f'-d /{self.data_container}/{archive_name} '
             f'-H "X-Delete-After: 16070400" '  # 6 months
-            f'{self.data_container} {media.remote_name}',
-            check=True,  # TODO: Handle errors (01/2021)
+            f'{self.data_container} {item.name}',
+            check=True,  # TODO: Handle errors and check ETAG (01/2021)
         )
 
-        # Upload new version.
-        self.object_store.delete(media.remote_name, self.data_container)
-        upload = self.upload(media)
-
         # Update metadata.
-        self.checksums[item.checksum].remove(item.obfuscated_name)
-        log.debug("Uploaded new version for: %s", media)
+        self.files.pop(item.name)
 
-        return upload
+        if len(self.checksums[item.checksum]) == 1:
+            self.checksums.pop(item.checksum)
+        else:
+            self.checksums[item.checksum].remove(item.name)
+
+    def obfuscate_filepath(self, media):
+        return self.obfuscator(media.relative_path.encode()).hexdigest()
+
+
+class BackupItem:
+    def __init__(self, name: str, *, backup: 'Backup'):
+        self.name = name
+        self.backup = backup
+
+    # Properties
+    @property
+    def checksum(self):
+        return self.backup.files[self.name]['checksum']
+
+    @property
+    def last_modification(self):
+        return self.backup.files[self.name]['mtime']
+
+    @property
+    def original_file(self):
+        return self.backup.files[self.name]['file'],
+
+    # Methods
+
+    def exists(self):
+        return self.name in self.backup.files
 
 
 class Media(Path):
