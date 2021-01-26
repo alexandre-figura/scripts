@@ -224,11 +224,11 @@ class Backup:
 
         # XXX: Copy file list to avoid iteration error (01/2021)
         # `dictionary changed size during iteration`
-        # for name in self._files.copy():
-        #     item = BackupItem(name, backup=self)
+        for name in self._files.copy():
+            item = BackupItem(name, backup=self)
 
-        #     if not item.original_file.exists():
-        #         self.delete(item)
+            if not item.original_file.exists():
+                self.delete(item)
 
     # Finders
 
