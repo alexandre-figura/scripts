@@ -46,7 +46,7 @@ def retrieve_backup(data_container: str, metadata_container: str) -> 'Backup':
     )
 
 
-def synchronize(directory: str, backup: 'Backup'):
+def synchronize(directory: Path, backup: 'Backup'):
     """Update an online backup to reflect local state.
 
     Files are first compared by "Last Modification Time" to detect new changes.
@@ -56,6 +56,9 @@ def synchronize(directory: str, backup: 'Backup'):
     Checksums are only computed for files which are not yet detected to be
     in the backup, and after every upload (new files, changes, renaming).
     """
+    if not directory.is_absolute():
+        directory = Path.cwd() / directory
+
     # Scan directory to backup.
     medias = [
         LocalFile(path.relative_to(directory))
@@ -81,15 +84,14 @@ def synchronize(directory: str, backup: 'Backup'):
             # A similar file already exists in backup.
 
             for copy in copies:
-                if copy.last_modification == media.last_modification:
-                    # A copy has been made, or the file has been renamed.
+                if not Path(directory, copy.original_file).exists():
+                    # File has been renamed.
+                    item = backup.rename(copy, str(media))
+                    break
 
-                    if Path(directory, copy.original_file).exists():
-                        # It is a brand new copy.
-                        backup.upload(media)
-                    else:
-                        # File has been renamed.
-                        backup.rename(copy, media)
+            else:
+                # It is a brand new copy.
+                item = backup.copy(copy, str(media))
 
         else:
             # File is not in backup yet.
@@ -162,15 +164,20 @@ class Backup:
         try:
             yield
 
+        except Exception:
+            error = "An unexpected error happened during backup synchronization"
+            log.critical(error, exc_info=True)
+
         except KeyboardInterrupt:
             log.warning(
                 "Backup manually stopped by user "
                 "before synchronization had time to complete"
             )
 
-        finally:
+        else:
             log.info("Backup synchronization has complete")
 
+        finally:
             mapping_file = self.obfuscate_filepath(self.MAPPING_FILENAME)
             checksums_file = self.obfuscate_filepath(self.CHECKSUMS_FILENAME)
 
@@ -213,19 +220,14 @@ class Backup:
     def clean(self) -> None:
         """Archive in backup files deleted from :attr:`.directory`."""
         # TODO: Don't analyze files already found previously (01/2021)
-
         # FIXME: How to clean files stored on several external hard drives? (01/2021)
-        #
-        # When doing a single backup for several hard drives, we want files
-        # to have a relative path in the backup. But when backuping one drive
-        # at a time, it is impossible to detect files which have been deleted.
-        # Thus, we deactivate this function for now, as it only works for backups
-        # with absolute paths.
-        #
-        # for name in self._files:
+
+        # XXX: Copy file list to avoid iteration error (01/2021)
+        # `dictionary changed size during iteration`
+        # for name in self._files.copy():
         #     item = BackupItem(name, backup=self)
 
-        #     if not (self.directory / item.original_file).exists():
+        #     if not item.original_file.exists():
         #         self.delete(item)
 
     # Finders
@@ -236,7 +238,10 @@ class Backup:
 
         for obfuscated_name in self._checksums.get(the_file.checksum, []):
             item = BackupItem(obfuscated_name, backup=self)
-            items.append(item)
+
+            if item.last_modification == the_file.last_modification:
+                # Simple mechanism to avoid MD5 checksum collisions.
+                items.append(item)
 
         return items
 
@@ -253,15 +258,92 @@ class Backup:
 
     # Actions
 
-    def rename(self, item: 'BackupItem', the_file: 'LocalFile') -> 'BackupItem':
+    def copy(
+            self,
+            item: 'BackupItem',
+            target: str,
+            *,
+            quiet: bool = False) -> 'BackupItem':
+        assert item.exists(), f"File not in backup: {item.name}"
+
+        obfuscated_name = self.obfuscate_filepath(target)
+
+        cli = [
+            'swift', 'copy',  # Not yet supported by OpenStack SDK
+            '-d', f'/{self.data_container}/{obfuscated_name}',
+            f'{self.data_container}', f'{item.name}',
+        ]
+        # TODO: Handle errors and check ETAG (01/2021)
+        run(cli, check=True, capture_output=True)
+
+        self._files[obfuscated_name] = self._files[item.name].copy()
+        # TODO: Move item attribute updates into BackupItem  to avoid errors (01/2021)
+        # Item attribute names and what is stored in YAML files is different...
+        self._files[obfuscated_name].update({
+            'file': target,
+            'stamp': self.generate_stamp(),
+        })
+        self._checksums[item.checksum].append(obfuscated_name)
+
+        if not quiet:
+            log.info("Copied file in backup: %s => %s", item.original_file, target)
+
+        return BackupItem(obfuscated_name, backup=self)
+
+    def delete(
+            self,
+            item: 'BackupItem',
+            *,
+            archive: bool = True,
+            quiet: bool = False) -> None:
+        """Delete file from the backup.
+
+        File is not immediately deleted: an archive is made,
+        and kept for 6 months, before getting automatically
+        removed from the backup.
+        """
+        assert item.exists(), f"File not in backup: {item.name}"
+
+        if archive:
+            stamp = self.generate_stamp()
+            archive_name = f'{item.name}-{stamp}'
+
+            cli = [
+                'swift', 'copy',  # Not yet supported by OpenStack SDK
+                '-d', f'/{self.data_container}/{archive_name}',
+                '-H', 'X-Delete-After: 16070400',  # 6 months
+                f'{self.data_container}', f'{item.name}'
+            ]
+            # TODO: Handle errors and check ETAG (01/2021)
+            run(cli, check=True, capture_output=True)
+        else:
+            self._delete(item.name)
+
+        # Update metadata.
+        original_path = item.original_file
+
+        if len(self._checksums[item.checksum]) == 1:
+            self._checksums.pop(item.checksum)
+        else:
+            self._checksums[item.checksum].remove(item.name)
+
+        # XXX: Delete items in ._files after ._checksums (01/2021)
+        # item.checksum looks into backup._files to return checksum.
+        self._files.pop(item.name)
+
+        if not quiet:
+            log.info("Deleted file from backup: %s", original_path)
+
+    def rename(self, item: 'BackupItem', target: str) -> 'BackupItem':
         """Rename file in the backup."""
         assert item.exists(), f"File not in backup: {item.name}"
 
-        obfuscated_name = self.obfuscate_filepath(str(the_file))
-        new = self.copy(item, obfuscated_name)
-        self.delete(item)
+        previous_path = item.original_file
 
-        log.info("Renamed in backup: %s", the_file)
+        new = self.copy(item, target, quiet=True)
+        self.delete(item, archive=False, quiet=True)
+
+        log.info("Renamed file in backup: %s => %s", previous_path, target)
 
         return new
 
@@ -283,7 +365,7 @@ class Backup:
         if replace:
             # TODO: Check if it overwrites by default (01/2021)
             assert item.exists(), f"File not in backup: {item.name}"
-            self.delete(item)
+            self.delete(item, quiet=True)
 
         self._upload(the_file, obfuscated_name)
 
@@ -297,12 +379,13 @@ class Backup:
             'checksum': the_file.checksum,
             'file': str(the_file),
             'mtime': the_file.last_modification.timestamp(),
+            'stamp': self.generate_stamp(),
         }
 
         if replace:
             log.info("Uploaded new version for: %s", the_file)
         else:
-            log.info("Uploaded to backup: %s", the_file)
+            log.info("Uploaded file to backup: %s", the_file)
 
         return item
 
@@ -323,50 +406,8 @@ class Backup:
 
     # Helpers
 
-    def copy(self, item: 'BackupItem', target: str) -> 'BackupItem':
-        assert item.exists(), f"File not in backup: {item.name}"
-
-        run(
-            f'swift copy '  # Not yet supported by OpenStack SDK
-            f'-d /{self.data_container}/{target} '
-            f'{self.data_container} {item.name}',
-            check=True,  # TODO: Handle errors and check ETAG (01/2021)
-        )
-        self._files[target] = self._files[item.name]
-        self._checksums[item.checksum].append(target)
-
-        log.info(f"Made new copy in backup from {item.name}: {target}")
-        return BackupItem(target, backup=self)
-
-    def delete(self, item: 'BackupItem') -> None:
-        """Delete file from the backup.
-
-        File is not immediately deleted: an archive is made,
-        and kept for 6 months, before getting automatically
-        removed from the backup.
-        """
-        assert item.exists(), f"File not in backup: {item.name}"
-
-        stamp = int(datetime.utcnow().timestamp())
-        archive_name = f'{item.name}-{stamp}'
-
-        run(
-            f'swift copy '  # Not yet supported by OpenStack SDK
-            f'-d /{self.data_container}/{archive_name} '
-            f'-H "X-Delete-After: 16070400" '  # 6 months
-            f'{self.data_container} {item.name}',
-            check=True,  # TODO: Handle errors and check ETAG (01/2021)
-        )
-
-        # Update metadata.
-        self._files.pop(item.name)
-
-        if len(self._checksums[item.checksum]) == 1:
-            self._checksums.pop(item.checksum)
-        else:
-            self._checksums[item.checksum].remove(item.name)
-
-        log.debug("Deleted file from backup: %s", item.name)
+    def generate_stamp(self):
+        return int(datetime.utcnow().timestamp())
 
     def load_checksums(self):
         checksums_file = self.obfuscate_filepath(self.CHECKSUMS_FILENAME)
@@ -416,7 +457,7 @@ class Backup:
             yield LocalFile(decrypted)
         finally:
             decrypted.unlink()
-            log.debug("Removed temporarily decrypted file: %s", decrypted.name)
+            log.debug("Removed temporarily decrypted file: %s", decrypted)
 
     @contextmanager
     def encrypt_file(self, path: 'LocalFile') -> Iterator['LocalFile']:
@@ -430,7 +471,7 @@ class Backup:
             yield LocalFile(encrypted)
         finally:
             encrypted.unlink()
-            log.debug("Removed temporarily encrypted file: %s", encrypted.name)
+            log.debug("Removed temporarily encrypted file: %s", encrypted)
 
     def obfuscate_filepath(self, path: Union[str, Path]) -> str:
         obfuscated = self.obfuscator(str(path))
@@ -438,6 +479,11 @@ class Backup:
         return obfuscated
 
     # Private Thingies
+
+    def _delete(self, name: str, container: str = None) -> None:
+        container = container or self.data_container
+        self.object_store.delete_object(name, container=container)
+        log.debug("Removed file from backup for: %s", name)
 
     def _download(self, name: str, container: str = None) -> bytes:
         container = container or self.data_container
@@ -528,7 +574,12 @@ class BackupItem:
 
     @property
     def original_file(self) -> str:
-        return self.backup._files[self.name]['file']
+        return Path(self.backup._files[self.name]['file'])
+
+    @property
+    def saved_on(self):
+        stamp = self.backup._files[self.name]['stamp']
+        return datetime.fromtimestamp(stamp, tz=timezone.utc)
 
     # Methods
 
@@ -572,13 +623,13 @@ class LocalFile:
 # Helper Functions
 
 def encrypt_with_gpg(src: str, dst: str, *, recipient: str) -> None:
-    cli = f'gpg -e -r {recipient} -o {dst} {src}'
-    run(cli.split(' '), check=True)
+    cli = ['gpg', '-e', '-r', recipient, '-o', dst, src]
+    run(cli, check=True)
 
 
 def decrypt_with_gpg(src: str, dst: str, **kwargs) -> None:
-    cli = f'gpg -d -o {dst} {src}'
-    run(cli.split(' '), check=True)
+    cli = ['gpg', '-d', '-o', dst, src]
+    run(cli, check=True, capture_output=True)
 
 
 def obfuscate_with_blake2b(path: str) -> str:
@@ -588,7 +639,7 @@ def obfuscate_with_blake2b(path: str) -> str:
 # Script
 
 if __name__ == '__main__':
-    directory = sys.argv[1]
+    directory = Path(sys.argv[1])
     data_container = f'{sys.argv[2]}-data'
     metadata_container = f'{sys.argv[2]}-metadata'
     gpg_key = sys.argv[3]
@@ -600,9 +651,9 @@ if __name__ == '__main__':
     log.addHandler(console)
     log.setLevel(logging.INFO)
 
+    # Run backup.
     print("Starting backup...")
 
-    # Run backup.
     backup = retrieve_backup(data_container, metadata_container)
 
     with backup.open(recipient=gpg_key):
