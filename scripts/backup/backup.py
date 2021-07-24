@@ -46,61 +46,6 @@ def retrieve_backup(data_container: str, metadata_container: str) -> 'Backup':
     )
 
 
-def synchronize(directory: Path, backup: 'Backup'):
-    """Update an online backup to reflect local state.
-
-    Files are first compared by "Last Modification Time" to detect new changes.
-    This allows to not have to compute checksums for every file,
-    and thus have a quicker backup.
-
-    Checksums are only computed for files which are not yet detected to be
-    in the backup, and after every upload (new files, changes, renaming).
-    """
-    if not directory.is_absolute():
-        directory = Path.cwd() / directory
-
-    # Scan directory to backup.
-    medias = [
-        LocalFile(path.relative_to(directory))
-        for path in Path(directory).rglob('*')
-        if path.is_file() and not str(path.relative_to(directory)).startswith('.')
-    ]
-
-    if not medias:
-        sys.exit("Nothing to backup :(")
-
-    os.chdir(directory)  # Files in backup have relative paths
-
-    # TODO: Do multiprocessing (01/2021)
-    for media in medias:
-        if copy := backup.find_by_path(media):
-            # File already exists in backup.
-
-            if copy.last_modification != media.last_modification:
-                # File has changed since last backup.
-                backup.upload_new_version(media)
-
-        elif copies := backup.find_by_checksum(media):
-            # A similar file already exists in backup.
-
-            for copy in copies:
-                if not Path(directory, copy.original_file).exists():
-                    # File has been renamed.
-                    item = backup.rename(copy, str(media))
-                    break
-
-            else:
-                # It is a brand new copy.
-                item = backup.copy(copy, str(media))
-
-        else:
-            # File is not in backup yet.
-            backup.upload(media)
-
-    # Archive files not on disk anymore.
-    backup.clean()
-
-
 # Custom Objects
 
 class Backup:
@@ -184,11 +129,19 @@ class Backup:
             try:
                 with LocalFile('/tmp', self.MAPPING_FILENAME).open('w') as f:
                     yaml.safe_dump(self._files, f)
-                    self._upload(f.name, mapping_file, self.metadata_container)
+                    self._upload(
+                        f.name,
+                        mapping_file,
+                        container=self.metadata_container,
+                    )
 
                 with LocalFile('/tmp', self.CHECKSUMS_FILENAME).open('w') as f:
                     yaml.safe_dump(self._checksums, f)
-                    self._upload(f.name, checksums_file, self.metadata_container)
+                    self._upload(
+                        f.name,
+                        checksums_file,
+                        container=self.metadata_container,
+                    )
 
             except Exception:
                 error = "An unexpected error happened while uploading metadata files"
@@ -217,18 +170,74 @@ class Backup:
                 del self._files
                 del self._checksums
 
-    def clean(self) -> None:
-        """Archive in backup files deleted from :attr:`.directory`."""
-        # TODO: Don't analyze files already found previously (01/2021)
-        # FIXME: How to clean files stored on several external hard drives? (01/2021)
+    def synchronize(self, directory: Path) -> List['BackupItem']:
+        """Update an online backup to reflect local state.
 
-        # XXX: Copy file list to avoid iteration error (01/2021)
-        # `dictionary changed size during iteration`
-        for name in self._files.copy():
+        Files are first compared by "Last Modification Time" to detect new changes.
+        This allows to not have to compute checksums for every file,
+        and thus have a quicker backup.
+
+        Checksums are only computed for files which are not yet detected to be
+        in the backup, and after every upload (new files, changes, renaming).
+        """
+        if not directory.is_absolute():
+            directory = Path.cwd() / directory
+
+        # Scan directory to backup.
+        medias = [
+            LocalFile(path.relative_to(directory))
+            for path in Path(directory).rglob('*')
+            if path.is_file() and not str(path.relative_to(directory)).startswith('.')
+        ]
+
+        os.chdir(directory)  # Files in backup have relative paths
+        items = []
+
+        # TODO: Do multiprocessing (01/2021)
+        for media in medias:
+            if copy := self.find_by_path(media):
+                # File already exists in backup.
+
+                if copy.last_modification != media.last_modification:
+                    # File has changed since last backup.
+                    item = self.upload_new_version(media)
+                    items.append(item)
+
+            elif copies := self.find_by_checksum(media):
+                # A similar file already exists in backup.
+
+                for copy in copies:
+                    if not Path(directory, copy.original_file).exists():
+                        # File has been renamed.
+                        item = self.rename(copy, str(media))
+                        break
+
+                else:
+                    # It is a brand new copy.
+                    item = self.copy(copy, str(media))
+
+                items.append(item)
+
+            else:
+                # File is not in backup yet.
+                item = self.upload(media)
+                items.append(item)
+
+        # Archive files not on disk anymore.
+        self.clean()
+
+        return items
+
+    def restore(self, directory: Path) -> List['LocalFile']:
+        medias = []
+
+        for name in self._files:
             item = BackupItem(name, backup=self)
+            dst = LocalFile(directory, item.original_file)
+            self.download(item.name, dst)
+            medias.append(dst)
 
-            if not item.original_file.exists():
-                self.delete(item)
+        return medias
 
     # Finders
 
@@ -289,6 +298,12 @@ class Backup:
             log.info("Copied file in backup: %s => %s", item.original_file, target)
 
         return BackupItem(obfuscated_name, backup=self)
+
+    def download(self, item: 'BackupItem', target: 'LocalFile') -> None:
+        assert item.exists(), f"File not in backup: {item.name}"
+
+        self._download(item.name, target)
+        log.info("Downloaded file from backup: %s", item.original_file)
 
     def delete(
             self,
@@ -406,6 +421,19 @@ class Backup:
 
     # Helpers
 
+    def clean(self) -> None:
+        """Archive in backup files deleted from :attr:`.directory`."""
+        # TODO: Don't analyze files already found previously (01/2021)
+        # FIXME: How to clean files stored on several external hard drives? (01/2021)
+
+        # XXX: Copy file list to avoid iteration error (01/2021)
+        # `dictionary changed size during iteration`
+        for name in self._files.copy():
+            item = BackupItem(name, backup=self)
+
+            if not item.original_file.exists():
+                self.delete(item)
+
     def generate_stamp(self):
         return int(datetime.utcnow().timestamp())
 
@@ -413,14 +441,17 @@ class Backup:
         checksums_file = self.obfuscate_filepath(self.CHECKSUMS_FILENAME)
 
         try:
-            checksums = self._download(checksums_file, self.metadata_container)
+            checksums = self._download(
+                checksums_file,
+                container=self.metadata_container,
+            )
             log.debug("Retrieved checksums file from backup")
 
         except ResourceNotFound:
             log.warning("Checksums file not found in backup")
 
             checksums = b''
-            self._upload(checksums, checksums_file, self.metadata_container)
+            self._upload(checksums, checksums_file, container=self.metadata_container)
 
             log.info("Created checksums file in backup")
 
@@ -430,14 +461,17 @@ class Backup:
         mapping_file = self.obfuscate_filepath(self.MAPPING_FILENAME)
 
         try:
-            mapping = self._download(mapping_file, self.metadata_container)
+            mapping = self._download(
+                mapping_file,
+                self.metadata_container,
+            )
             log.debug("Retrieved mapping file from backup")
 
         except ResourceNotFound:
             log.warning("Mapping file not found in backup")
 
             mapping = b''
-            self._upload(mapping, mapping_file, self.metadata_container)
+            self._upload(mapping, mapping_file, container=self.metadata_container)
 
             log.info("Created mapping file in backup")
 
@@ -445,33 +479,13 @@ class Backup:
 
     # Petits Cachotiers
 
-    @contextmanager
-    def decrypt_file(self, path: 'LocalFile') -> Iterator['LocalFile']:
-        decrypted = Path('/tmp', str(uuid.uuid4()))
-        self.decryptor(str(path), str(decrypted))
+    def decrypt_file(self, src: str, dst: str) -> None:
+        self.decryptor(src, dst)
+        log.debug("Saved decrypted version of %s into: %s", src, dst)
 
-        msg = "Saved decrypted version of %s into temporary file: %s"
-        log.debug(msg, path, str(decrypted))
-
-        try:
-            yield LocalFile(decrypted)
-        finally:
-            decrypted.unlink()
-            log.debug("Removed temporarily decrypted file: %s", decrypted)
-
-    @contextmanager
-    def encrypt_file(self, path: 'LocalFile') -> Iterator['LocalFile']:
-        encrypted = Path('/tmp', str(uuid.uuid4()))
-        self.encryptor(str(path), str(encrypted))
-
-        msg = "Saved encrypted version of %s into temporary file: %s"
-        log.debug(msg, path, str(encrypted))
-
-        try:
-            yield LocalFile(encrypted)
-        finally:
-            encrypted.unlink()
-            log.debug("Removed temporarily encrypted file: %s", encrypted)
+    def encrypt_file(self, src: str, dst: str) -> None:
+        self.encryptor(src, dst)
+        log.debug("Saved encrypted version of %s into: %s", src, dst)
 
     def obfuscate_filepath(self, path: Union[str, Path]) -> str:
         obfuscated = self.obfuscator(str(path))
@@ -480,32 +494,47 @@ class Backup:
 
     # Private Thingies
 
-    def _delete(self, name: str, container: str = None) -> None:
+    def _delete(self, name: str, *, container: str = None) -> None:
         container = container or self.data_container
         self.object_store.delete_object(name, container=container)
         log.debug("Removed file from backup for: %s", name)
 
-    def _download(self, name: str, container: str = None) -> bytes:
+    def _download(
+            self,
+            name: str,
+            target: str = None,
+            *,
+            container: str = None) -> Optional[bytes]:
         container = container or self.data_container
+        decrypted = LocalFile(target) if target else NamedTemporaryFile()
 
-        with NamedTemporaryFile() as encrypted:
-            download = self.object_store.download_object(name, container=container)
-            log.debug("Retrieved encrypted data from backup for: %s", name)
+        try:
+            with NamedTemporaryFile() as encrypted:
+                stream = self.object_store.stream_object(name, container=container)
 
-            encrypted.write(download)
-            encrypted.flush()
+                for chunk in stream:
+                    encrypted.write(chunk)
 
-            msg = "Wrote encrypted data in temporary file for %s in: %s"
-            log.debug(msg, name, encrypted.name)
+                encrypted.flush()
+                msg = "Wrote encrypted data in temporary file for %s in: %s"
+                log.debug(msg, name, encrypted.name)
 
-            # TODO: Verify checksum (01/2021)
-            # FIXME: When implementing file restoration, check memory usage (01/2021)
-            with self.decrypt_file(LocalFile(encrypted.name)) as decrypted:
-                data = decrypted.read_bytes()
+                if target:
+                    self.decrypt_file(encrypted.name, str(decrypted))
+                else:
+                    self.decrypt_file(encrypted.name, decrypted.name)
 
-        return data
+                # TODO: Verify checksum (01/2021)
+                log.debug("Decrypted data from backup for %s into: %s", name, target)
 
-    def _get(self, name: str, container: str = None) -> Object:
+        finally:
+            if not target:
+                data = decrypted.read()
+                decrypted.close()
+                log.debug("Removed temporarily decrypted file: %s", decrypted)
+                return data
+
+    def _get(self, name: str, *, container: str = None) -> Object:
         container = container or self.data_container
         metadata = self.object_store.get_object_metadata(name, container)
         log.debug("Retrieved metadata from backup for: %s", name)
@@ -515,7 +544,8 @@ class Backup:
             self,
             something: Union[bytes, str, 'LocalFile'],
             target: str,
-            container: str = None) -> Object:
+            *,
+            container: str = None) -> None:
         container = container or self.data_container
 
         if isinstance(something, bytes):
@@ -525,27 +555,27 @@ class Backup:
             tmp.write(something)
             tmp.flush()
 
-            path = LocalFile('/tmp', tmp.name)
-            log.debug("Saved raw data for %s into temporary file: %s", target, path)
-        else:
-            path = cast(LocalFile, something)
+            msg = "Saved raw data for %s into temporary file: %s"
+            log.debug(msg, target, tmp.name)
 
-        with self.encrypt_file(path) as encrypted:
+            decrypted = LocalFile(tmp.name)
+        else:
+            decrypted = cast(LocalFile, something)
+
+        with NamedTemporaryFile() as encrypted:
+            self.encrypt_file(str(decrypted), encrypted.name)
+
             while True:
                 self.object_store.upload_object(
-                    container, target, filename=str(encrypted),
+                    container,
+                    target,
+                    filename=encrypted.name,
                 )
-                log.debug("Uploaded file to backup: %s", path)
-                upload = self._get(target, container)
+                log.debug("Uploaded file to backup: %s", decrypted)
+                upload = self._get(target, container=container)
 
                 if upload.etag == encrypted.checksum:  # Alles gut!
-                    log.debug("Uploaded file is not corrupted: %s", path)
-
-                    if isinstance(something, bytes):
-                        tmp.close()
-                        log.debug("Removed temporary file: %s", path)
-
-                    return upload
+                    log.debug("Uploaded file is not corrupted: %s", decrypted)
 
                 else:
                     msg = (
@@ -553,7 +583,11 @@ class Backup:
                         "Remote copy appears to be corrupted. "
                         "Trying again: %s"
                     )
-                    log.warning(msg, path)
+                    log.warning(msg, decrypted)
+
+            if isinstance(something, bytes):
+                tmp.close()
+                log.debug("Removed temporary file: %s", tmp.name)
 
 
 class BackupItem:
@@ -639,10 +673,11 @@ def obfuscate_with_blake2b(path: str) -> str:
 # Script
 
 if __name__ == '__main__':
-    directory = Path(sys.argv[1])
-    data_container = f'{sys.argv[2]}-data'
-    metadata_container = f'{sys.argv[2]}-metadata'
-    gpg_key = sys.argv[3]
+    action = sys.argv[1]
+    directory = Path(sys.argv[2])
+    data_container = f'{sys.argv[3]}-data'
+    metadata_container = f'{sys.argv[4]}-metadata'
+    gpg_key = sys.argv[5]
 
     # Display log messages to console.
     console = logging.StreamHandler()
@@ -657,6 +692,16 @@ if __name__ == '__main__':
     backup = retrieve_backup(data_container, metadata_container)
 
     with backup.open(recipient=gpg_key):
-        synchronize(directory, backup)
+        if action == 'synchronize':
+            items = backup.synchronize(directory)
+
+            if not items:
+                print("Nothing to backup :o")
+
+        elif action == 'restore':
+            medias = backup.restore(directory)
+
+            if not medias:
+                print("Nothing to restore :o")
 
     print("See you next time!")
