@@ -1,116 +1,149 @@
-use anyhow::Result;
-use std::fs;
-use std::path::Path;
+use anyhow::{anyhow, Result};
+use derive_new::new;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str;
 use structopt::StructOpt;
 
-// When a file is too big, it will get split into segments on Swift.
-const MAX_FILE_SIZE: u64 = 104857600;
 
 /// Save in the Cloud your collection of souvenirs.
 #[derive(StructOpt)]
 struct Cli {
-    /// Where souvenirs are stored locally
+    /// Directory containing your souvenirs on your machine
     #[structopt(parse(from_os_str))]
-    path: std::path::PathBuf,
-    /// Where souvenirs will be uploaded to
-    container: String,
+    dir: std::path::PathBuf,
+    /// Name of your backup online
+    backup: String,
 }
 
 
-// Backup a local directory into a remote Swift container.
-fn backup(dir: &Path, container: &str) -> Result<()> {
-    let swift_list = Command::new("swift")
-                    .arg("list")
-                    .arg(container)
-                    .output();
+#[derive(new)]
+struct OnlineBackup {
+    data_container: String,
+    segments_container: String,
+    #[new(value = "104857600")]
+    segments_size: u64,
+}
 
-    /*
-    FIXME: borrowed value does not live long enough (output)
-    let remote_files = match swift_list {
-        Ok(output) => {
-            match str::from_utf8(&output.stdout) {
-                Ok(decoded) => decoded.lines().collect::<Vec<&str>>(),
-                Err(_error) => {
-                    let malformated = String::from_utf8_lossy(&output.stdout);
-                    panic!("Could not decode Swift List output: {}", malformated);
-                }
-            }
+
+impl OnlineBackup {
+    fn list(&self) -> Result<Vec<String>> {
+        let swift_list = Command::new("swift")
+                         .arg("list")
+                         .arg(&self.data_container)
+                         .output()?.stdout;
+
+        let mut object_list = String::from_utf8(swift_list)?
+                                     .lines()
+                                     .map(|l| String::from(l))
+                                     .collect::<Vec<String>>();
+
+        object_list.sort_unstable();
+
+        return Ok(object_list)
+    }
+
+    fn upload(&self, src: &Path, dst: &str) -> Result<()> {
+        let swift_upload = if &src.metadata()?.len() > &self.segments_size {
+            // Big file
+            Command::new("swift")
+                    .arg("upload")
+                    .args(&["--object-name", &dst])
+                    .arg("--use-slo")
+                    .args(&["--segment-size", &format!("{}", &self.segments_size)])
+                    .args(&["--segment-container", &self.segments_container])
+                    .arg(&self.data_container)
+                    .arg(&src)
+                    .output()?
+        } else {
+            // Small file
+            Command::new("swift")
+                    .arg("upload")
+                    .args(&["--object-name", &dst])
+                    .arg(&self.data_container)
+                    .arg(&src)
+                    .output()?
+        };
+
+        if swift_upload.status.success() {
+            return Ok(());
+        } else {
+            return Err(anyhow!(String::from_utf8(swift_upload.stderr)?));
         }
-        Err(error) => panic!("Could not retrieve list of remote files: {}", error),
-    };
-    */
-    
-    let stdout = swift_list.unwrap().stdout;
-    let mut remote_files = str::from_utf8(&stdout)?.lines().collect::<Vec<&str>>();
-    remote_files.sort_unstable();
-
-    scan_local_files(&dir, &dir, &container, &remote_files)?;
-
-    Ok(())
+    }
 }
 
 
-fn scan_local_files(top_dir: &Path, dir: &Path, container: &str, remote_files: &Vec<&str>) -> Result<()> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
+#[derive(new)]
+struct LocalDirectory<'a> {
+    path: &'a Path,
+}
+
+impl LocalDirectory<'_> {
+    fn scan(&self) -> Result<Vec<PathBuf>> {
+        let mut file_list: Vec<PathBuf> = Vec::new();
+        self._scan(&self.path, &mut file_list)?;
+        return Ok(file_list);
+    }
+
+    fn _scan(&self, dir: &Path, file_list: &mut Vec<PathBuf>) -> Result<()> {
+        for entry in dir.read_dir()? {
+            let path = entry?.path();
 
             if path.is_dir() {
-                scan_local_files(&top_dir, &path, &container, &remote_files)?;
+                self._scan(&path, file_list)?;
             } else {
-                let relative_path = path.strip_prefix(&top_dir)?.to_str().unwrap();
-
-                if remote_files.contains(&relative_path) {
-                    println!("{}: already online", relative_path);
-                } else {
-                    upload_file(&path, &top_dir, &container)?;
-                }
+                file_list.push(PathBuf::from(&path));
             }
         }
-    }
 
-    Ok(())
+        return Ok(());
+    }
 }
 
-
-// Upload a local file to a remote Swift container.
-fn upload_file(file: &Path, dir: &Path, container: &str) -> Result<()> {
-    let relative_path = file.strip_prefix(&dir)?.to_str().unwrap();
-
-    let swift_upload = if &file.metadata()?.len() > &MAX_FILE_SIZE {
-        // Big file
-        Command::new("swift")
-                .arg("upload")
-                .args(&["--object-name", relative_path])
-                .arg("--use-slo")
-                .arg("--segment-size")
-                .arg(format!("{}", MAX_FILE_SIZE))
-                .arg(&container)
-                .arg(&file)
-                .output()
-    } else {
-        // Small file
-        Command::new("swift")
-                .arg("upload")
-                .args(&["--object-name", relative_path])
-                .arg(&container)
-                .arg(&file)
-                .output()
+fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
+    let remote_files = match backup.list() {
+        Ok(files) => {
+            println!("Backup's file list retrieved");
+            files
+        }
+        Err(error) => panic!("Could not retrieve backup's file list: {}", error),
     };
 
-    match swift_upload {
-        Ok(_output) => { println!("{}", relative_path) },
-        Err(error) => { println!("{}: could not upload file ({})", relative_path, error) },
-    }
+    let local_files = match dir.scan() {
+        Ok(files) => {
+            println!("Local directory scanned");
+            files
+        }
+        Err(error) => panic!("Could not scan local directory: {}", error),
+    };
 
-    Ok(())
+    for path in local_files{
+        let rpath = path.strip_prefix(&dir.path).unwrap().to_str().unwrap();
+
+        if remote_files.contains(&String::from(rpath)) == false {
+            match backup.upload(&path, &rpath) {
+                Ok(_output) => {
+                    println!("{}", rpath)
+                },
+                Err(error) => {
+                    println!("{}: could not upload file ({})", rpath, error)
+                },
+            };
+        }
+    }
 }
 
 
 fn main() {
     let args = Cli::from_args();
-    backup(&args.path, &args.container).unwrap();
+
+    let data_container = format!("{}--data", &args.backup);
+    let segments_container = format!("{}--segments", &args.backup);
+
+    let backup = OnlineBackup::new(data_container, segments_container);
+    let dir = LocalDirectory::new(&Path::new(&args.dir));
+
+    println!("Starting synchronization...");
+    synchronize(&backup, &dir);
 }
