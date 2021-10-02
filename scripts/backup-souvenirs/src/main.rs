@@ -10,10 +10,10 @@ use structopt::StructOpt;
 /// Save in the Cloud your collection of souvenirs.
 #[derive(StructOpt)]
 struct Cli {
-    /// Directory containing your souvenirs on your machine
+    /// Directory containing your souvenirs on your machine.
     #[structopt(parse(from_os_str))]
     dir: std::path::PathBuf,
-    /// Name of your backup online
+    /// Name of your backup online.
     backup: String,
 }
 
@@ -33,6 +33,7 @@ fn main() {
 }
 
 fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
+    // Retrieve file list.
     let remote_files = match backup.list() {
         Ok(files) => {
             println!("Backup's file list retrieved");
@@ -48,6 +49,9 @@ fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
         }
         Err(error) => panic!("Could not scan local directory: {}", error),
     };
+
+    // Upload files.
+    println!("Starting upload...");
 
     for path in local_files {
         let rpath = path.strip_prefix(&dir.path).unwrap().to_str().unwrap();
@@ -76,6 +80,7 @@ struct OnlineBackup {
 }
 
 impl OnlineBackup {
+    /// Retrieve file names in the backup.
     fn list(&self) -> Result<Vec<String>> {
         let swift_list = Command::new("swift")
             .arg("list")
@@ -93,6 +98,7 @@ impl OnlineBackup {
         return Ok(object_list);
     }
 
+    /// Upload a new file to the backup.
     fn upload(&self, src: &Path, dst: &str) -> Result<()> {
         let swift_upload = if &src.metadata()?.len() > &self.segments_size {
             // Big file
@@ -129,12 +135,14 @@ struct LocalDirectory<'a> {
 }
 
 impl LocalDirectory<'_> {
+    /// Collect files to upload.
     fn scan(&self) -> Result<Vec<PathBuf>> {
         let mut file_list: Vec<PathBuf> = Vec::new();
         self._scan(&self.path, &mut file_list)?;
         return Ok(file_list);
     }
 
+    /// Recursively scan a directory.
     fn _scan(&self, dir: &Path, file_list: &mut Vec<PathBuf>) -> Result<()> {
         for entry in dir.read_dir()? {
             let path = entry?.path();
