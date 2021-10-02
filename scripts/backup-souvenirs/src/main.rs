@@ -5,7 +5,6 @@ use std::process::Command;
 use std::str;
 use structopt::StructOpt;
 
-
 /// Save in the Cloud your collection of souvenirs.
 #[derive(StructOpt)]
 struct Cli {
@@ -16,7 +15,6 @@ struct Cli {
     backup: String,
 }
 
-
 #[derive(new)]
 struct OnlineBackup {
     data_container: String,
@@ -25,44 +23,44 @@ struct OnlineBackup {
     segments_size: u64,
 }
 
-
 impl OnlineBackup {
     fn list(&self) -> Result<Vec<String>> {
         let swift_list = Command::new("swift")
-                         .arg("list")
-                         .arg(&self.data_container)
-                         .output()?.stdout;
+            .arg("list")
+            .arg(&self.data_container)
+            .output()?
+            .stdout;
 
         let mut object_list = String::from_utf8(swift_list)?
-                                     .lines()
-                                     .map(|l| String::from(l))
-                                     .collect::<Vec<String>>();
+            .lines()
+            .map(|l| String::from(l))
+            .collect::<Vec<String>>();
 
         object_list.sort_unstable();
 
-        return Ok(object_list)
+        return Ok(object_list);
     }
 
     fn upload(&self, src: &Path, dst: &str) -> Result<()> {
         let swift_upload = if &src.metadata()?.len() > &self.segments_size {
             // Big file
             Command::new("swift")
-                    .arg("upload")
-                    .args(&["--object-name", &dst])
-                    .arg("--use-slo")
-                    .args(&["--segment-size", &format!("{}", &self.segments_size)])
-                    .args(&["--segment-container", &self.segments_container])
-                    .arg(&self.data_container)
-                    .arg(&src)
-                    .output()?
+                .arg("upload")
+                .args(&["--object-name", &dst])
+                .arg("--use-slo")
+                .args(&["--segment-size", &format!("{}", &self.segments_size)])
+                .args(&["--segment-container", &self.segments_container])
+                .arg(&self.data_container)
+                .arg(&src)
+                .output()?
         } else {
             // Small file
             Command::new("swift")
-                    .arg("upload")
-                    .args(&["--object-name", &dst])
-                    .arg(&self.data_container)
-                    .arg(&src)
-                    .output()?
+                .arg("upload")
+                .args(&["--object-name", &dst])
+                .arg(&self.data_container)
+                .arg(&src)
+                .output()?
         };
 
         if swift_upload.status.success() {
@@ -72,7 +70,6 @@ impl OnlineBackup {
         }
     }
 }
-
 
 #[derive(new)]
 struct LocalDirectory<'a> {
@@ -118,22 +115,21 @@ fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
         Err(error) => panic!("Could not scan local directory: {}", error),
     };
 
-    for path in local_files{
+    for path in local_files {
         let rpath = path.strip_prefix(&dir.path).unwrap().to_str().unwrap();
 
         if remote_files.contains(&String::from(rpath)) == false {
             match backup.upload(&path, &rpath) {
                 Ok(_output) => {
                     println!("{}", rpath)
-                },
+                }
                 Err(error) => {
                     println!("{}: could not upload file ({})", rpath, error)
-                },
+                }
             };
         }
     }
 }
-
 
 fn main() {
     let args = Cli::from_args();
