@@ -5,6 +5,8 @@ use std::process::Command;
 use std::str;
 use structopt::StructOpt;
 
+// CLI Configuration
+
 /// Save in the Cloud your collection of souvenirs.
 #[derive(StructOpt)]
 struct Cli {
@@ -14,6 +16,56 @@ struct Cli {
     /// Name of your backup online
     backup: String,
 }
+
+// Script
+
+fn main() {
+    let args = Cli::from_args();
+
+    let data_container = format!("{}--data", &args.backup);
+    let segments_container = format!("{}--segments", &args.backup);
+
+    let backup = OnlineBackup::new(data_container, segments_container);
+    let dir = LocalDirectory::new(&Path::new(&args.dir));
+
+    println!("Starting synchronization...");
+    synchronize(&backup, &dir);
+}
+
+fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
+    let remote_files = match backup.list() {
+        Ok(files) => {
+            println!("Backup's file list retrieved");
+            files
+        }
+        Err(error) => panic!("Could not retrieve backup's file list: {}", error),
+    };
+
+    let local_files = match dir.scan() {
+        Ok(files) => {
+            println!("Local directory scanned");
+            files
+        }
+        Err(error) => panic!("Could not scan local directory: {}", error),
+    };
+
+    for path in local_files {
+        let rpath = path.strip_prefix(&dir.path).unwrap().to_str().unwrap();
+
+        if remote_files.contains(&String::from(rpath)) == false {
+            match backup.upload(&path, &rpath) {
+                Ok(_output) => {
+                    println!("{}", rpath)
+                }
+                Err(error) => {
+                    println!("{}: could not upload file ({})", rpath, error)
+                }
+            };
+        }
+    }
+}
+
+// API
 
 #[derive(new)]
 struct OnlineBackup {
@@ -96,50 +148,4 @@ impl LocalDirectory<'_> {
 
         return Ok(());
     }
-}
-
-fn synchronize(backup: &OnlineBackup, dir: &LocalDirectory) {
-    let remote_files = match backup.list() {
-        Ok(files) => {
-            println!("Backup's file list retrieved");
-            files
-        }
-        Err(error) => panic!("Could not retrieve backup's file list: {}", error),
-    };
-
-    let local_files = match dir.scan() {
-        Ok(files) => {
-            println!("Local directory scanned");
-            files
-        }
-        Err(error) => panic!("Could not scan local directory: {}", error),
-    };
-
-    for path in local_files {
-        let rpath = path.strip_prefix(&dir.path).unwrap().to_str().unwrap();
-
-        if remote_files.contains(&String::from(rpath)) == false {
-            match backup.upload(&path, &rpath) {
-                Ok(_output) => {
-                    println!("{}", rpath)
-                }
-                Err(error) => {
-                    println!("{}: could not upload file ({})", rpath, error)
-                }
-            };
-        }
-    }
-}
-
-fn main() {
-    let args = Cli::from_args();
-
-    let data_container = format!("{}--data", &args.backup);
-    let segments_container = format!("{}--segments", &args.backup);
-
-    let backup = OnlineBackup::new(data_container, segments_container);
-    let dir = LocalDirectory::new(&Path::new(&args.dir));
-
-    println!("Starting synchronization...");
-    synchronize(&backup, &dir);
 }
